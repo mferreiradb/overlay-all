@@ -2,6 +2,7 @@
 // Compativel com o csc.exe do .NET Framework 4.x (C# 5).
 
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -76,6 +77,8 @@ namespace OverlayAll
         public int OpacityPercent = 20;
         public bool Enabled = true;
         public bool HideFromCapture = true;
+        public int? ButtonX;
+        public int? ButtonY;
 
         private static string FilePath
         {
@@ -103,6 +106,8 @@ namespace OverlayAll
                     if (key == "opacity" && int.TryParse(val, out n)) s.OpacityPercent = Clamp(n);
                     else if (key == "enabled" && bool.TryParse(val, out b)) s.Enabled = b;
                     else if (key == "hideFromCapture" && bool.TryParse(val, out b)) s.HideFromCapture = b;
+                    else if (key == "buttonX" && int.TryParse(val, out n)) s.ButtonX = n;
+                    else if (key == "buttonY" && int.TryParse(val, out n)) s.ButtonY = n;
                 }
             }
             catch { }
@@ -114,12 +119,16 @@ namespace OverlayAll
             try
             {
                 Directory.CreateDirectory(Path.GetDirectoryName(FilePath));
-                File.WriteAllLines(FilePath, new[]
+                List<string> lines = new List<string>();
+                lines.Add("opacity=" + OpacityPercent);
+                lines.Add("enabled=" + Enabled);
+                lines.Add("hideFromCapture=" + HideFromCapture);
+                if (ButtonX.HasValue && ButtonY.HasValue)
                 {
-                    "opacity=" + OpacityPercent,
-                    "enabled=" + Enabled,
-                    "hideFromCapture=" + HideFromCapture
-                });
+                    lines.Add("buttonX=" + ButtonX.Value);
+                    lines.Add("buttonY=" + ButtonY.Value);
+                }
+                File.WriteAllLines(FilePath, lines.ToArray());
             }
             catch { }
         }
@@ -233,6 +242,148 @@ namespace OverlayAll
         }
     }
 
+    // Botao pequeno e escuro, grudado na lateral direita por padrao; clique abre o modal, arrastar move.
+    internal sealed class FloatingButton : Form
+    {
+        private readonly Action onClick;
+        private readonly Action<Point> onMoved;
+        private Point downCursor;
+        private Point downLocation;
+        private bool pressed;
+        private bool dragging;
+
+        public FloatingButton(Action onClick, Point? saved, Action<Point> onMoved)
+        {
+            this.onClick = onClick;
+            this.onMoved = onMoved;
+
+            float scale;
+            using (Graphics g = Graphics.FromHwnd(IntPtr.Zero)) scale = g.DpiX / 96f;
+
+            FormBorderStyle = FormBorderStyle.None;
+            ShowInTaskbar = false;
+            StartPosition = FormStartPosition.Manual;
+            TopMost = true;
+            DoubleBuffered = true;
+            Cursor = Cursors.Hand;
+            Opacity = 0.9;
+            BackColor = Color.FromArgb(45, 45, 45);
+            ForeColor = Color.FromArgb(205, 205, 205);
+            Font = new Font(SystemFonts.MessageBoxFont.FontFamily, 13f, FontStyle.Bold);
+            Size = new Size((int)(30 * scale), (int)(48 * scale));
+            Location = saved.HasValue ? saved.Value : DefaultLocation();
+            EnsureOnScreen();
+        }
+
+        protected override CreateParams CreateParams
+        {
+            get
+            {
+                CreateParams cp = base.CreateParams;
+                cp.ExStyle |= Native.WS_EX_TOOLWINDOW | Native.WS_EX_NOACTIVATE | Native.WS_EX_TOPMOST;
+                return cp;
+            }
+        }
+
+        // Clicar/arrastrar nao pode roubar o foco do app em uso.
+        protected override bool ShowWithoutActivation
+        {
+            get { return true; }
+        }
+
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg == Native.WM_MOUSEACTIVATE)
+            {
+                m.Result = new IntPtr(Native.MA_NOACTIVATE);
+                return;
+            }
+            base.WndProc(ref m);
+        }
+
+        public void ApplyAffinity(bool hideFromCapture)
+        {
+            if (!IsHandleCreated) return;
+            Native.SetWindowDisplayAffinity(Handle, hideFromCapture ? Native.WDA_EXCLUDEFROMCAPTURE : Native.WDA_NONE);
+        }
+
+        private Point DefaultLocation()
+        {
+            Screen primary = Screen.PrimaryScreen;
+            return new Point(primary.Bounds.Right - Width,
+                primary.WorkingArea.Top + (primary.WorkingArea.Height - Height) / 2);
+        }
+
+        // Se a posicao salva ficou fora de qualquer monitor (monitor removido), volta ao padrao.
+        public void EnsureOnScreen()
+        {
+            foreach (Screen s in Screen.AllScreens)
+            {
+                Rectangle visible = Rectangle.Intersect(s.WorkingArea, Bounds);
+                if (visible.Width * visible.Height >= Width * Height / 2) return;
+            }
+            Location = DefaultLocation();
+        }
+
+        protected override void OnMouseDown(MouseEventArgs e)
+        {
+            base.OnMouseDown(e);
+            if (e.Button != MouseButtons.Left) return;
+            pressed = true;
+            dragging = false;
+            downCursor = Cursor.Position;
+            downLocation = Location;
+        }
+
+        protected override void OnMouseMove(MouseEventArgs e)
+        {
+            base.OnMouseMove(e);
+            if (!pressed) return;
+            Point c = Cursor.Position;
+            int dx = c.X - downCursor.X;
+            int dy = c.Y - downCursor.Y;
+            if (!dragging)
+            {
+                Size drag = SystemInformation.DragSize;
+                if (Math.Abs(dx) <= drag.Width / 2 && Math.Abs(dy) <= drag.Height / 2) return;
+                dragging = true;
+                Cursor = Cursors.SizeAll;
+            }
+            Rectangle vs = SystemInformation.VirtualScreen;
+            int x = Math.Max(vs.Left, Math.Min(vs.Right - Width, downLocation.X + dx));
+            int y = Math.Max(vs.Top, Math.Min(vs.Bottom - Height, downLocation.Y + dy));
+            Location = new Point(x, y);
+        }
+
+        protected override void OnMouseUp(MouseEventArgs e)
+        {
+            base.OnMouseUp(e);
+            if (e.Button != MouseButtons.Left || !pressed) return;
+            pressed = false;
+            Cursor = Cursors.Hand;
+            if (dragging)
+            {
+                dragging = false;
+                onMoved(Location);
+            }
+            else
+            {
+                onClick();
+            }
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+            using (Pen border = new Pen(Color.FromArgb(110, 110, 110)))
+            {
+                e.Graphics.DrawRectangle(border, 0, 0, Width - 1, Height - 1);
+            }
+            TextRenderer.DrawText(e.Graphics, "?", Font, ClientRectangle, ForeColor,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+        }
+    }
+
     internal sealed class OverlayForm : Form
     {
         private const int HK_TOGGLE = 1;
@@ -247,6 +398,7 @@ namespace OverlayAll
         private readonly Settings settings;
         private readonly bool showHelpOnStart;
         private bool helpOpen;
+        private FloatingButton fab;
         private readonly NotifyIcon tray;
         private readonly System.Windows.Forms.Timer keepOnTop;
         private ToolStripMenuItem toggleItem;
@@ -310,6 +462,18 @@ namespace OverlayAll
         protected override void OnShown(EventArgs e)
         {
             base.OnShown(e);
+            // Botao "owned" pelo overlay: fica sempre acima dele (sem escurecer) e some/aparece junto com ele.
+            Point? saved = null;
+            if (settings.ButtonX.HasValue && settings.ButtonY.HasValue)
+                saved = new Point(settings.ButtonX.Value, settings.ButtonY.Value);
+            fab = new FloatingButton(ShowHelp, saved, delegate(Point p)
+            {
+                settings.ButtonX = p.X;
+                settings.ButtonY = p.Y;
+                settings.Save();
+            });
+            fab.Show(this);
+            fab.ApplyAffinity(settings.HideFromCapture);
             if (!settings.Enabled) Hide();
             if (showHelpOnStart) BeginInvoke(new MethodInvoker(ShowHelp));
         }
@@ -489,6 +653,7 @@ namespace OverlayAll
             // WDA_EXCLUDEFROMCAPTURE exige Windows 10 2004+; em versoes antigas simplesmente falha.
             Native.SetWindowDisplayAffinity(Handle,
                 settings.HideFromCapture ? Native.WDA_EXCLUDEFROMCAPTURE : Native.WDA_NONE);
+            if (fab != null) fab.ApplyAffinity(settings.HideFromCapture);
         }
 
         private void UpdateTrayText()
@@ -506,6 +671,7 @@ namespace OverlayAll
         {
             Rectangle r = SystemInformation.VirtualScreen;
             Native.SetWindowPos(Handle, Native.HWND_TOPMOST, r.X, r.Y, r.Width, r.Height, Native.SWP_NOACTIVATE);
+            if (fab != null) fab.EnsureOnScreen();
         }
 
         private void ReassertTopmost()
