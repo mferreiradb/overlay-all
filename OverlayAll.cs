@@ -52,6 +52,9 @@ namespace OverlayAll
         [DllImport("user32.dll")]
         public static extern bool SetProcessDPIAware();
 
+        [DllImport("dwmapi.dll")]
+        public static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
+
         [DllImport("user32.dll")]
         public static extern bool SetProcessDpiAwarenessContext(IntPtr value);
 
@@ -129,6 +132,107 @@ namespace OverlayAll
         }
     }
 
+    internal sealed class HelpDialog : Form
+    {
+        public HelpDialog(int opacityPercent)
+        {
+            Text = "OverlayAll";
+            Font = SystemFonts.MessageBoxFont;
+            FormBorderStyle = FormBorderStyle.FixedDialog;
+            MinimizeBox = false;
+            MaximizeBox = false;
+            ShowInTaskbar = false;
+            TopMost = true;
+            StartPosition = FormStartPosition.Manual;
+            AutoSize = true;
+            AutoSizeMode = AutoSizeMode.GrowAndShrink;
+            Padding = new Padding(16);
+            // Fundo escuro e texto cinza-claro (nunca branco puro): o app serve a quem tem fotofobia.
+            BackColor = Color.FromArgb(32, 32, 32);
+            ForeColor = Color.FromArgb(205, 205, 205);
+
+            TableLayoutPanel table = new TableLayoutPanel();
+            table.AutoSize = true;
+            table.ColumnCount = 2;
+            table.Dock = DockStyle.Fill;
+
+            Label title = new Label();
+            title.Text = "Overlay ativo (" + opacityPercent + "%)";
+            title.Font = new Font(Font.FontFamily, Font.Size + 5, FontStyle.Bold);
+            title.AutoSize = true;
+            title.Margin = new Padding(0, 0, 0, 10);
+            table.Controls.Add(title);
+            table.SetColumnSpan(title, 2);
+
+            string[,] rows =
+            {
+                { "Ctrl+Alt+O", "Liga/desliga o overlay" },
+                { "Ctrl+Alt+\u2191", "Aumenta a opacidade (+5%)" },
+                { "Ctrl+Alt+\u2193", "Diminui a opacidade (-5%)" },
+                { "Ctrl+Alt+Q", "Sai do programa" }
+            };
+            for (int i = 0; i < rows.GetLength(0); i++)
+            {
+                Label key = new Label();
+                key.Text = rows[i, 0];
+                key.Font = new Font(Font.FontFamily, Font.Size + 3, FontStyle.Bold);
+                key.AutoSize = true;
+                key.Margin = new Padding(0, 2, 16, 2);
+                Label action = new Label();
+                action.Text = rows[i, 1];
+                action.Font = new Font(Font.FontFamily, Font.Size + 3);
+                action.AutoSize = true;
+                action.Margin = new Padding(0, 2, 0, 2);
+                table.Controls.Add(key);
+                table.Controls.Add(action);
+            }
+
+            Label tip = new Label();
+            tip.Text = "Tambem pelo icone na bandeja do sistema\n(clique direito para o menu, duplo clique liga/desliga).";
+            tip.AutoSize = true;
+            tip.Margin = new Padding(0, 10, 0, 10);
+            table.Controls.Add(tip);
+            table.SetColumnSpan(tip, 2);
+
+            Button ok = new Button();
+            ok.Text = "OK";
+            ok.DialogResult = DialogResult.OK;
+            ok.AutoSize = true;
+            ok.MinimumSize = new Size(90, 28);
+            ok.Anchor = AnchorStyles.Right;
+            ok.Margin = new Padding(0);
+            ok.FlatStyle = FlatStyle.Flat;
+            ok.BackColor = Color.FromArgb(58, 58, 58);
+            ok.ForeColor = Color.FromArgb(205, 205, 205);
+            ok.FlatAppearance.BorderColor = Color.FromArgb(110, 110, 110);
+            ok.FlatAppearance.MouseOverBackColor = Color.FromArgb(75, 75, 75);
+            ok.FlatAppearance.MouseDownBackColor = Color.FromArgb(48, 48, 48);
+            table.Controls.Add(ok);
+            table.SetColumnSpan(ok, 2);
+
+            Controls.Add(table);
+            AcceptButton = ok;
+            CancelButton = ok;
+        }
+
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            // Barra de titulo escura (Windows 10 1809+ / 11); em versoes antigas o erro e ignorado.
+            int on = 1;
+            try { Native.DwmSetWindowAttribute(Handle, 20, ref on, sizeof(int)); }
+            catch { }
+        }
+
+        protected override void OnShown(EventArgs e)
+        {
+            base.OnShown(e);
+            Rectangle area = Screen.PrimaryScreen.WorkingArea;
+            Location = new Point(area.Left + (area.Width - Width) / 2, area.Top + (area.Height - Height) / 2);
+            Activate();
+        }
+    }
+
     internal sealed class OverlayForm : Form
     {
         private const int HK_TOGGLE = 1;
@@ -138,8 +242,11 @@ namespace OverlayAll
 
         private const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
         private const string AppName = "OverlayAll";
+        public const string StartupArg = "--startup";
 
         private readonly Settings settings;
+        private readonly bool showHelpOnStart;
+        private bool helpOpen;
         private readonly NotifyIcon tray;
         private readonly System.Windows.Forms.Timer keepOnTop;
         private ToolStripMenuItem toggleItem;
@@ -147,9 +254,10 @@ namespace OverlayAll
         private ToolStripMenuItem startupItem;
         private ToolStripMenuItem opacityMenu;
 
-        public OverlayForm(Settings settings)
+        public OverlayForm(Settings settings, bool showHelpOnStart)
         {
             this.settings = settings;
+            this.showHelpOnStart = showHelpOnStart;
 
             FormBorderStyle = FormBorderStyle.None;
             ShowInTaskbar = false;
@@ -203,6 +311,22 @@ namespace OverlayAll
         {
             base.OnShown(e);
             if (!settings.Enabled) Hide();
+            if (showHelpOnStart) BeginInvoke(new MethodInvoker(ShowHelp));
+        }
+
+        // Dialogo "dono" = overlay: janelas owned ficam sempre acima do owner, mesmo com o overlay topmost.
+        private void ShowHelp()
+        {
+            if (helpOpen) return;
+            helpOpen = true;
+            try
+            {
+                using (HelpDialog dlg = new HelpDialog(settings.OpacityPercent))
+                {
+                    dlg.ShowDialog(this);
+                }
+            }
+            finally { helpOpen = false; }
         }
 
         protected override void WndProc(ref Message m)
@@ -299,6 +423,10 @@ namespace OverlayAll
                 RefreshMenuItems();
             };
             menu.Items.Add(startupItem);
+
+            ToolStripMenuItem helpItem = new ToolStripMenuItem("Mostrar controles");
+            helpItem.Click += delegate { ShowHelp(); };
+            menu.Items.Add(helpItem);
 
             menu.Items.Add(new ToolStripSeparator());
 
@@ -407,7 +535,7 @@ namespace OverlayAll
                 using (RegistryKey k = Registry.CurrentUser.OpenSubKey(RunKey, true))
                 {
                     if (k == null) return;
-                    if (enable) k.SetValue(AppName, "\"" + Application.ExecutablePath + "\"");
+                    if (enable) k.SetValue(AppName, "\"" + Application.ExecutablePath + "\" " + StartupArg);
                     else k.DeleteValue(AppName, false);
                 }
             }
@@ -418,7 +546,7 @@ namespace OverlayAll
     internal static class Program
     {
         [STAThread]
-        private static void Main()
+        private static void Main(string[] args)
         {
             bool isNew;
             using (Mutex mutex = new Mutex(true, @"Local\OverlayAll.SingleInstance", out isNew))
@@ -433,7 +561,8 @@ namespace OverlayAll
                 Native.EnableDpiAwareness();
                 Application.EnableVisualStyles();
                 Application.SetCompatibleTextRenderingDefault(false);
-                Application.Run(new OverlayForm(Settings.Load()));
+                bool fromStartup = Array.IndexOf(args, OverlayForm.StartupArg) >= 0;
+                Application.Run(new OverlayForm(Settings.Load(), !fromStartup));
             }
         }
     }

@@ -13,7 +13,7 @@ Sem dependências — usa o `csc.exe` do .NET Framework 4 que já vem no Windows
 
 ## Uso
 
-Execute `OverlayAll.exe`. Controle pelo ícone na bandeja (escudo) ou pelos atalhos:
+Execute `OverlayAll.exe`. Ao abrir, uma janelinha no centro da tela mostra os controles; clique **OK** (ou Enter/Esc) e o overlay continua ativo. Ela reaparece pelo item "Mostrar controles" da bandeja e não aparece quando iniciado com o Windows. Controle pelo ícone na bandeja (escudo) ou pelos atalhos:
 
 | Atalho | Ação |
 |---|---|
